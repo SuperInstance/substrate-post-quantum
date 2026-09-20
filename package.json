@@ -1,0 +1,15 @@
+{
+  "name": "substrate-post-quantum",
+  "version": "0.0.1",
+  "description": "Post-quantum resistance from the cellular substrate's witness-log algebra",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "test": "node --test src/tests/*.test.ts"
+  },
+  "keywords": ["post-quantum", "substrate", "witness-log", "cryptography", "signature", "PQC"],
+  "license": "MIT",
+  "dependencies": {
+    "substrate-quantum": "^0.0.1"
+  }
+}
