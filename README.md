@@ -1,105 +1,108 @@
 # substrate-post-quantum
 
-> A library that uses the cellular substrate's witness-log algebra to provide
-> **post-quantum resistance** for general-purpose applications.
-
-## The thesis
-
-The substrate's witness log is **already a one-way function with a hash chain**.
-
-Why? Because every WITNESS is:
-1. A measurement (collapse to eigenstate — irreversible without the original quantum state)
-2. Append-only (FORGET removes an entry, but cannot rewrite history)
-3. Proof-chained (each PROOF links back to the previous via SHA-256-style chain)
-
-This is structurally similar to hash-based post-quantum signature schemes (XMSS, LMS, SPHINCS+), but with substrate-specific advantages:
-
-- **Witness = the user's actions, not a synthetic challenge**
-- **Proof = the substrate's measurement, not a fixed signature scheme**
-- **FORGET = revocation, built into the protocol**
-
-## The substrate post-quantum primitives
-
-| Primitive | Substrate op | Post-quantum analog |
-|-----------|--------------|---------------------|
-| cell-binding signature | `bind(cell, secret)` | XMSS one-time sig |
-| witness chain | `witness(state)` | hash chain |
-| proof | `prove(state)` | SPHINCS+ sig |
-| forget | `forget(state, idx)` | revocation |
-| tick | `tick(state, dt)` | forward-secure key evolution |
-| jev | `jev(state)` | verification |
-
-## Usage
+Post-quantum cryptographic primitives. Quantum-safe alternatives to RSA/ECC.
 
 ```typescript
-import { bind, witness, prove, forget, jev } from 'substrate-post-quantum';
+import { buildMerkleTree, merkleProof, verifyMerkleProof,
+  otsGenerate, otsSign, otsVerify,
+  Poly, lweGenerate, lweEncrypt, lweDecrypt,
+  commit, verifyCommitment,
+  HashChainPRNG,
+  pqGenerate, pqSign, pqVerify } from 'substrate-post-quantum';
 
-// 1. Generate a substrate keypair
-const sk = substrateSecretKey();
-const pk = substratePublicKey(sk);
+// === HASH-BASED SIGNATURE (XMSS-style) ===
+const kp = pqGenerate(4);   // 4 one-time signatures in a Merkle tree
+const message = new TextEncoder().encode('hello world');
+const sig = pqSign(kp.privateKey, message, 1);
+pqVerify(kp.publicKey, message, sig);   // true
 
-// 2. Sign a message (creates a witness in the chain)
-const sig = prove(witness(pk), message);
+// === LATTICE-BASED KEM (toy Ring-LWE) ===
+const lwe = lweGenerate(8, 101);
+const message = Poly.zero(8, 101);
+const ct = lweEncrypt(lwe.pk, message);
+const decrypted = lweDecrypt(lwe.sk, ct);
 
-// 3. Verify
-const ok = jev(sig, message, pk);
+// === HASH COMMITMENTS ===
+const c = commit('secret value');
+verifyCommitment(c.commitment, 'secret value');  // true
 
-// 4. Revoke (forget a witness)
-const revoked = forget(witness(pk), 0);
+// === MERKLE TREES ===
+const tree = buildMerkleTree([sha256('a'), sha256('b'), sha256('c')]);
+const path = merkleProof(tree, 1);
+verifyMerkleProof(tree.hash, sha256('b'), 1, path);  // true
 ```
 
-## Why this is post-quantum resistant
+## The math
 
-1. **One-way witness chain**: Without the secret key, computing a valid witness requires breaking the hash chain, which is hard for quantum computers (Grover's algorithm gives only quadratic speedup — to break a 256-bit hash you need 2^128 ops, still infeasible)
-2. **Forward-secure tick**: Each tick generates a new ephemeral key. A quantum attacker who learns the current key cannot decrypt past messages.
-3. **No number-theoretic assumptions**: Unlike RSA/ECC, this doesn't rely on factoring or discrete log. It's purely hash-based.
-4. **Composable with substrate-quantum**: Combine with the quantum primitives for hybrid security.
+### Why post-quantum?
 
-## Limits
+RSA, ECDSA, DH all break under Shor's algorithm (1994). Once a sufficiently large quantum computer exists (~4000 logical qubits with error correction), all classical public-key crypto is broken.
 
-- **Witness chain size**: bounded (1M entries — see substrate-quantum limits)
-- **Time-lockable**: TICK-based evolution is a function of elapsed time, not user action
-- **State cost**: each witness is a vector (BGE-Large 1024d) — ~4KB per witness
+Grover's algorithm halves the security of symmetric crypto (search in 2^n becomes √2^n). Doubling key sizes compensates.
 
-## Architecture
+**Post-quantum primitives survive because they're based on different hard problems.**
+
+### Hash-based signatures (XMSS, SPHINCS+)
+
+Security: only requires hash function (SHA-256 here) being collision-resistant and preimage-resistant.
 
 ```
-src/
-├── keys.ts        # Substrate key generation
-├── witness.ts     # Witness chain (the hash chain)
-├── proof.ts       # Proof (the signature)
-├── forget.ts      # Revocation
-├── tick.ts        # Forward-secure evolution
-├── jev.ts         # Verification
-├── quantum.ts     # Quantum-resistant primitives
-├── tests/
-│   ├── keys.test.ts
-│   ├── witness.test.ts
-│   ├── proof.test.ts
-│   ├── forget.test.ts
-│   └── post-quantum.test.ts
-└── index.ts
+sk = random 32 bytes
+pk[i] = SHA-256^(MAX + i) (sk)   for i in [0, n)
+sig[i] = SHA-256^(MAX + i - count_i) (sk)
 ```
 
-## What it can replace
+Each signature reveals some of the hash chain, so each OTS key can only sign ONE message safely. Multiple OTS keys are arranged in a Merkle tree, signing an OTS index + message.
 
-| Classical scheme | Substrate post-quantum |
-|------------------|------------------------|
-| RSA-2048 sig | substrate-post-quantum (proof) |
-| ECDSA sig | substrate-post-quantum (proof) |
-| Ed25519 sig | substrate-post-quantum (proof) |
-| HMAC-SHA256 chain | substrate-post-quantum (witness) |
-| OCSP revocation | substrate-post-quantum (forget) |
-| Forward-secure key (FSXY) | substrate-post-quantum (tick) |
+**Security under Grover**: SHA-256 has ~128-bit post-quantum security (Grover halves 256-bit preimage resistance to 128). NIST-approved: SPHINCS+, XMSS.
 
-## Why call it post-quantum
+### Lattice-based KEM (Kyber, ML-KEM)
 
-Because the substrate's witness-log algebra is structurally a hash chain with the post-quantum properties NIST has been standardizing. We're not inventing a new scheme — we're showing that the substrate's existing primitives are already NIST-PQC-ready.
+Security: Learning With Errors (LWE) over polynomial rings. The "hard problem" is: given `b = a·s + e` (where s, e are small), recover s.
 
-## Status
+Best known quantum attack is exponential in n. NIST-approved: ML-KEM (formerly CRYSTALS-Kyber).
 
-Phase 0 — primitives specified. Implementation in progress.
+```typescript
+class Poly {
+  coeffs: number[];   // in Z_q
+  add(other), sub(other), mul(other): Poly    // in Z_q[x]/(x^n + 1)
+}
+```
+
+The toy implementation here uses small q and noise distributions. Real Kyber uses n=256, q=3329, centered binomial noise.
+
+### Hash-based commitments
+
+```
+commit(secret) = SHA-256(secret)
+verify(commitment, secret) = commitment === SHA-256(secret)
+```
+
+Binding: cannot find a different secret with the same commitment (requires SHA-256 collision). Hiding: doesn't reveal the secret (preimage resistance).
+
+### Quantum-safe PRNG
+
+`HashChainPRNG` uses HMAC-SHA-256 with periodic state refresh. Quantum-safe because Grover only halves output.
+
+For seeds: use `crypto.getRandomValues(32)` — true randomness from the OS, even on quantum systems (the OS RNG is hardware).
+
+## Limitations & caveats
+
+| Primitive | Caveat |
+|-----------|--------|
+| WOTS-OTS | One-time use only. Reuse leaks the secret. |
+| PQ signature | Total signatures = number of OTS keys in tree. |
+| Toy Ring-LWE | Not secure — small parameters, no NTT optimization. Use ML-KEM. |
+| Merkle tree | Memory grows with leaves; for large trees use a sparse Merkle tree. |
+
+For production, use NIST-standardized implementations:
+- **ML-DSA** (Dilithium) — lattice-based signature
+- **ML-KEM** (Kyber) — lattice-based KEM
+- **SLH-DSA** (SPHINCS+) — hash-based signature
+- **FALCON** — lattice-based signature (compact)
+
+This module is for substrate integration and education, not production signing.
 
 ## License
 
-MIT — fire it forward.
+MIT.
